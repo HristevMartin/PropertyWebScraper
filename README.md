@@ -29,5 +29,5 @@ git clone [repository URL]
 ****
 Usage
 Run the script using Python:
-* python scraper.py
+* python estate_scraper.py
 
