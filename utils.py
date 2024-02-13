@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urljoin, urlparse, parse_qs
 
 import mysql.connector
 import requests
@@ -106,6 +107,7 @@ def extract_property_details(detail_url, headers):
         "key_features": key_features,
         "description": description,
         "images": image_urls,
+        "country": "UK",
     }
 
     return data_payload
@@ -197,10 +199,10 @@ def insert_property_details(db_config, property_details):
         images_json = json.dumps(property_details["images"])
 
         insert_query = """
-        INSERT INTO properties2 (title, price, address, key_features, description, images, price_per_month, price_per_week,
-        right_image_url, latitude, longitude
+        INSERT INTO properties3 (title, price, address, key_features, description, images, price_per_month, price_per_week,
+        right_image_url, latitude, longitude, country
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         values = (
             property_details["title"],
@@ -214,6 +216,7 @@ def insert_property_details(db_config, property_details):
             property_details["right_image_url"],
             property_details["latitude"],
             property_details["longitude"],
+            property_details["country"],
         )
 
         cursor.execute(insert_query, values)
@@ -223,3 +226,159 @@ def insert_property_details(db_config, property_details):
     finally:
         cursor.close()
         conn.close()
+
+
+def extract_first_price(price_str):
+    # Removing currency symbols and unwanted text
+    price_str = re.sub(r'[^\d\s\-]', '', price_str)
+
+    # Find all number sequences
+    numbers = re.findall(r'\d+(?:\s?\d+)*', price_str)
+    numbers = [float(num.replace(' ', '')) for num in numbers]
+
+    # Return the first number or None
+    return numbers[0] if numbers else None
+
+
+def process_page(url, headers, db_config):
+    """
+    Processes a single page of property listings.
+    :param url: URL of the page to process
+    :param headers: Headers to use for the request
+    :param db_config: Database configuration
+    """
+    soup = make_soup(url, headers)
+    if not soup:
+        return
+
+    # Extract the URLs for the detail pages3
+    detail_links = [
+        a["href"]
+        for a in soup.select("a.propertyCard-link")
+        if "properties" in a["href"]
+    ]
+
+    for link in detail_links:
+        detail_url = f"https://www.rightmove.co.uk{link}"
+        property_details = extract_property_details(detail_url, headers=headers)
+
+        if property_details:
+            # Post-process the price and image URLs
+            property_details = post_process_the_price(property_details)
+            property_details = post_process_the_image_urls(property_details)
+            property_details = add_geocode_data(property_details)
+            insert_property_details(db_config, property_details)
+
+
+def clean_text(text):
+    text = text.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+    text = ' '.join(text.split())
+    return text
+
+
+def preprocess_price(price_str):
+    # Remove currency symbol and commas
+    price_str = price_str.replace('€', '').replace(',', '')
+
+    # Extract all numbers
+    numbers = re.findall(r'\d+(?:\.\d+)?', price_str)
+    numbers = [float(num.replace(' ', '')) for num in numbers]
+
+    # Handle different formats
+    if "month" in price_str or "year" in price_str:
+        # Return the first number (assuming it's the monthly/yearly rate)
+        return numbers[0] if numbers else None
+
+    if "-" in price_str and numbers:
+        # If it's a range, return the average
+        return sum(numbers) / len(numbers)
+
+    # Return the first number found, or None if no numbers are found
+    return numbers[0] if numbers else None
+
+
+def fetch_property_urls(listing_url, headers):
+    response = requests.get(listing_url, headers=headers)
+    if response.status_code != 200:
+        return []
+
+    soup = BeautifulSoup(response.content, "html.parser")
+    return [urljoin(listing_url, a['href']) for a in soup.select('a.title[href]')]
+
+
+def fetch_property_details(detail_url, headers):
+    response = requests.get(detail_url, headers=headers)
+    if response.status_code != 200:
+        return None
+
+    detail_soup = BeautifulSoup(response.content, "html.parser")
+
+    # Extract the title
+    title_tag = detail_soup.find('h1', class_='title')
+    title = clean_text(title_tag.get_text(strip=True)) if title_tag else 'Title not found'
+
+    # Extract the description
+    description_tag = detail_soup.find('div', class_='text')
+    description = clean_text(description_tag.get_text(strip=True)) if description_tag else 'Description not found'
+
+    # Extract images
+    image_tags = detail_soup.find_all('img')
+    detailed_images = [
+        urljoin(detail_url, img['src'])
+        for img in image_tags
+        if img.get('src') and not img['src'].endswith(('.png', '.svg'))
+    ]
+
+    # Extract location information
+    location_tag = detail_soup.find('span', class_='location')
+    location = location_tag.text.strip() if location_tag else 'No location info'
+
+    # Extract key features
+    property_features = {}
+    for characteristic in detail_soup.select('.component-single-property-characteristic .characteristic'):
+        label = characteristic.find('span', class_='label').get_text(strip=True)
+        value = characteristic.find('span', class_='value').get_text(strip=True)
+        property_features[label] = value
+
+    # Construct key features string
+    key_features = "; ".join([f"{k}: {v}" for k, v in property_features.items()])
+    key_features_cleaned = clean_text(key_features)
+
+    # Extract price
+    price_tag = detail_soup.find('span', class_='regular-price')
+    price = clean_text(price_tag.get_text(strip=True)) if price_tag else 'Price not found'
+
+    processed_price = int(extract_first_price(price)) if extract_first_price(price) else 0
+    processed_price = processed_price
+
+    print(f"Processed price: {processed_price}")
+
+    # Extract coordinates from Google Maps iframe
+    lat, lng = None, None
+    iframe_tag = detail_soup.find('iframe')
+
+    if iframe_tag and 'src' in iframe_tag.attrs:
+        iframe_src = iframe_tag['src']
+        parsed_url = urlparse(iframe_src)
+        query_params = parse_qs(parsed_url.query)
+
+        if 'q' in query_params:
+            coords = query_params['q'][0]
+            coords_match = re.match(r"([-+]?\d*\.\d+|\d+),\s*([-+]?\d*\.\d+|\d+)", coords)
+            if coords_match:
+                lat, lng = map(float, coords_match.groups())
+
+    return {
+        'title': title,
+        'description': description,
+        'images': ', '.join(detailed_images),  # Assuming 'detailed_images' is a list of image URLs
+        'latitude': lat,
+        'longitude': lng,
+        'price': price,
+        'address': location,
+        'key_features': key_features_cleaned,
+        'price_per_month': 'Price per month data not available',
+        'price_per_week': processed_price,
+        'right_image_url': 'Right image URL data not available',
+        'country': 'BG'
+    }

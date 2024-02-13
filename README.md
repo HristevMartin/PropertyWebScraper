@@ -28,6 +28,22 @@ git clone [repository URL]
 
 ****
 Usage
+
+* Create a virtual environment:
+```
+python -m venv venv
+```
+* Activate the virtual environment:
+```
+venv\Scripts\activate
+```
+* Install the dependencies:
+````
+pip install -r requirements.txt
+````
+
+
 Run the script using Python:
-* python scraper.py
+* python estate_scraper.py
+
 
