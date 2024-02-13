@@ -4,61 +4,43 @@ import requests
 
 from db_config import db_config
 from utils import (
-    make_soup,
-    extract_property_details,
-    post_process_the_price,
-    post_process_the_image_urls,
-    add_geocode_data,
-    insert_property_details,
+    process_page, fetch_property_urls, fetch_property_details, add_geocode_data, insert_property_details,
 )
 
-# Setting up basic logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
-def process_page(url, headers, db_config):
-    """
-    Processes a single page of property listings.
-    :param url: URL of the page to process
-    :param headers: Headers to use for the request
-    :param db_config: Database configuration
-    """
-    soup = make_soup(url, headers)
-    if not soup:
-        return
+def scrape_site2(base_url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 ..."
+    }
 
-    # Extract the URLs for the detail pages
-    detail_links = [
-        a["href"]
-        for a in soup.select("a.propertyCard-link")
-        if "properties" in a["href"]
-    ]
+    current_page = 0
 
-    for link in detail_links:
-        detail_url = f"https://www.rightmove.co.uk{link}"
-        property_details = extract_property_details(detail_url, headers=headers)
+    while True:
+        page_url = f"{base_url}index{current_page}.html" if current_page > 0 else base_url
+        property_urls = fetch_property_urls(page_url, headers)
 
-        if property_details:
-            # Post-process the price and image URLs
-            property_details = post_process_the_price(property_details)
-            property_details = post_process_the_image_urls(property_details)
-            property_details = add_geocode_data(property_details)
-            insert_property_details(db_config, property_details)
+        if not property_urls:
+            break
+
+        for url in property_urls:
+            property_details = fetch_property_details(url, headers)
+            if property_details:
+                property_details = add_geocode_data(property_details)
+                insert_property_details(db_config, property_details)
+
+        current_page += 1
 
 
-# configuration headers
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-}
-
-
-# Main scraping logic
-def main():
-    base_url = "https://www.rightmove.co.uk/property-to-rent/find.html?locationIdentifier=POSTCODE%5E840076&radius=10.0"
+def scrape_site1(base_url):
     index_increment = 24
     current_index = 0
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
 
     while True:
         page_url = f"{base_url}&index={current_index}"
@@ -68,6 +50,16 @@ def main():
         if "There are no more properties to show" in response.text:
             break
         current_index += index_increment
+
+
+# Main scraping logic
+def main():
+    site1_base_url_uk = "https://www.rightmove.co.uk/property-to-rent/find.html?locationIdentifier=POSTCODE%5E840076&radius=10.0"
+    site2_base_url_bg = "https://www.bulgarianproperties.com/Sofia_imoti/properties_in_bulgaria/"
+    scrape_site2(site2_base_url_bg)
+    scrape_site1(site1_base_url_uk)
+
+    print('Finished Scraping')
 
 
 if __name__ == "__main__":
