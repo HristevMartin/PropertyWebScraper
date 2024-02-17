@@ -51,7 +51,6 @@ def scrape_site1(base_url):
             break
         current_index += index_increment
 
-
 # Main scraping logic
 def main():
     site1_base_url_uk = "https://www.rightmove.co.uk/property-to-rent/find.html?locationIdentifier=POSTCODE%5E840076&radius=10.0"
